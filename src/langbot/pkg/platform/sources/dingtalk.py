@@ -722,6 +722,9 @@ class DingTalkAdapter(abstract_platform_adapter.AbstractMessagePlatformAdapter):
             is_stream = True
         return is_stream
 
+    def should_create_message_card_before_stream(self) -> bool:
+        return True
+
     async def create_message_card(self, message_id, event):
         self._prune_card_state()
         form_template_id = (self.config.get('human_input_card_template_id') or '').strip()

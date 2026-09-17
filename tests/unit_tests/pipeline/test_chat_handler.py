@@ -294,6 +294,121 @@ class TestChatHandlerStreaming:
 
         assert len(results) >= 1
 
+    @pytest.mark.asyncio
+    async def test_dingtalk_stream_card_created_before_runner_first_chunk(
+        self, fake_app, mock_event_ctx, set_runner
+    ):
+        """Adapters that opt in create the pending card before waiting for the first stream chunk."""
+        from tests.factories import text_query
+        from langbot_plugin.api.entities.builtin.provider.message import Message, ContentElement, MessageChunk
+
+        chat = get_chat_handler()
+
+        mock_event_ctx.is_prevented_default.return_value = False
+        fake_app.plugin_connector.emit_event = AsyncMock(return_value=mock_event_ctx)
+        fake_app.sess_mgr.trim_conversation_messages = Mock()
+
+        order = []
+
+        class EarlyCardAdapter:
+            async def is_stream_output_supported(self):
+                return True
+
+            def should_create_message_card_before_stream(self):
+                return True
+
+            async def create_message_card(self, message_id, event):
+                order.append('card')
+                return True
+
+        query = text_query('stream test')
+        query.adapter = EarlyCardAdapter()
+        query.user_message = Message(role='user', content=[ContentElement.from_text('test')])
+        query.session = Mock()
+        query.session.bot_uuid = query.bot_uuid
+        query.session.pipeline_uuid = query.pipeline_uuid
+        query.session.launcher_type = query.launcher_type
+        query.session.launcher_id = query.launcher_id
+        query.session.using_conversation.messages = []
+
+        class StreamRunner:
+            name = 'local-agent'
+
+            def __init__(self, app, config):
+                self.app = app
+                self.config = config
+
+            async def run(self, query):
+                order.append('runner')
+                yield MessageChunk(role='assistant', content='Hello', is_final=True)
+
+        set_runner(StreamRunner)
+
+        handler = chat.ChatMessageHandler(fake_app)
+
+        results = []
+        async for result in handler.handle(query):
+            results.append(result)
+
+        assert len(results) >= 1
+        assert order[:2] == ['card', 'runner']
+
+    @pytest.mark.asyncio
+    async def test_default_stream_card_creation_stays_after_first_chunk(
+        self, fake_app, mock_event_ctx, set_runner
+    ):
+        """Adapters without the opt-in hook keep the existing first-chunk card creation timing."""
+        from tests.factories import text_query
+        from langbot_plugin.api.entities.builtin.provider.message import Message, ContentElement, MessageChunk
+
+        chat = get_chat_handler()
+
+        mock_event_ctx.is_prevented_default.return_value = False
+        fake_app.plugin_connector.emit_event = AsyncMock(return_value=mock_event_ctx)
+        fake_app.sess_mgr.trim_conversation_messages = Mock()
+
+        order = []
+
+        class DefaultAdapter:
+            async def is_stream_output_supported(self):
+                return True
+
+            async def create_message_card(self, message_id, event):
+                order.append('card')
+                return True
+
+        query = text_query('stream test')
+        query.adapter = DefaultAdapter()
+        query.user_message = Message(role='user', content=[ContentElement.from_text('test')])
+        query.session = Mock()
+        query.session.bot_uuid = query.bot_uuid
+        query.session.pipeline_uuid = query.pipeline_uuid
+        query.session.launcher_type = query.launcher_type
+        query.session.launcher_id = query.launcher_id
+        query.session.using_conversation.messages = []
+
+        class StreamRunner:
+            name = 'local-agent'
+
+            def __init__(self, app, config):
+                self.app = app
+                self.config = config
+
+            async def run(self, query):
+                order.append('runner')
+                yield MessageChunk(role='assistant', content='Hello', is_final=True)
+
+        set_runner(StreamRunner)
+
+        handler = chat.ChatMessageHandler(fake_app)
+
+        results = []
+        async for result in handler.handle(query):
+            results.append(result)
+
+        assert len(results) >= 1
+        assert order[:2] == ['runner', 'card']
+
 
 @pytest.mark.usefixtures('mock_circular_import_chain')
 class TestChatHandlerExceptions:

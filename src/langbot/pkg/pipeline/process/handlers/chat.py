@@ -4,6 +4,7 @@ import uuid
 import typing
 import traceback
 import time
+import inspect
 from datetime import datetime
 
 
@@ -27,6 +28,26 @@ importutil.import_modules_in_pkg(runners)
 
 
 class ChatMessageHandler(handler.MessageHandler):
+    async def _should_create_message_card_before_stream(self, adapter) -> bool:
+        hook = getattr(type(adapter), 'should_create_message_card_before_stream', None)
+        if hook is None:
+            return False
+        try:
+            result = hook(adapter)
+            if inspect.isawaitable(result):
+                result = await result
+            return bool(result)
+        except Exception as exc:
+            self.ap.logger.warning(f'Failed to check early stream card support: {exc}')
+            return False
+
+    async def _try_create_message_card(self, query: pipeline_query.Query, resp_message_id: uuid.UUID) -> bool:
+        try:
+            return bool(await query.adapter.create_message_card(str(resp_message_id), query.message_event))
+        except Exception as exc:
+            self.ap.logger.warning(f'Failed to create stream message card: {exc}')
+            return False
+
     def _response_limit(self, name: str, default: int) -> int:
         instance_config = getattr(self.ap, 'instance_config', None)
         data = getattr(instance_config, 'data', {})
@@ -126,6 +147,8 @@ class ChatMessageHandler(handler.MessageHandler):
                 if is_stream:
                     resp_message_id = uuid.uuid4()
                     chunk_count = 0  # Track streaming chunks to reduce excessive logging
+                    if await self._should_create_message_card_before_stream(query.adapter):
+                        is_create_card = await self._try_create_message_card(query, resp_message_id)
 
                     async for result in runner.run(query):
                         self._check_response_size(result)
@@ -204,6 +227,23 @@ class ChatMessageHandler(handler.MessageHandler):
                     user_notice = query.pipeline_config['output']['misc'].get('failure-hint', 'Request failed.')
                 else:  # hide
                     user_notice = None
+
+                if (
+                    is_stream
+                    and is_create_card
+                    and not query.resp_messages
+                    and user_notice is not None
+                    and 'resp_message_id' in locals()
+                ):
+                    query.resp_messages.append(
+                        provider_message.MessageChunk(
+                            role='assistant',
+                            content=user_notice,
+                            is_final=True,
+                            msg_sequence=1,
+                            resp_message_id=str(resp_message_id),
+                        )
+                    )
 
                 yield entities.StageProcessResult(
                     result_type=entities.ResultType.INTERRUPT,
