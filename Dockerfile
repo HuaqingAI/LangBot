@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM node:22-alpine AS node
+FROM --platform=$BUILDPLATFORM docker.m.daocloud.io/library/node:22-alpine AS node
 
 WORKDIR /app
 
@@ -11,7 +11,7 @@ RUN cd web && npm install && npx vite build
 # Multi-stage keeps the compile toolchain (bison/flex/protobuf-dev/libnl-dev)
 # out of the final image; only the nsjail binary and its small runtime libs
 # (libprotobuf, libnl-route-3) are carried over.
-FROM python:3.12.7-slim AS nsjail-build
+FROM docker.m.daocloud.io/library/python:3.12.7-slim AS nsjail-build
 
 ARG NSJAIL_VERSION=3.6
 
@@ -25,7 +25,7 @@ RUN apt-get update \
     && install -m 0755 /nsjail/nsjail /usr/local/bin/nsjail \
     && rm -rf /var/lib/apt/lists/*
 
-FROM python:3.12.7-slim
+FROM docker.m.daocloud.io/library/python:3.12.7-slim
 
 WORKDIR /app
 
