@@ -929,6 +929,115 @@ class TestInvokeLLM:
             assert 'API key 无效' in str(exc_info.value)
 
 
+class TestLightRAGOllamaAuth:
+    """LightRAG's Ollama-compatible API expects X-API-Key instead of Bearer auth."""
+
+    def _mock_app(self):
+        mock_ap = Mock()
+        mock_ap.tool_mgr = Mock()
+        mock_ap.tool_mgr.generate_tools_for_openai = AsyncMock(return_value=None)
+        return mock_ap
+
+    @pytest.mark.asyncio
+    async def test_lightrag_ollama_completion_uses_x_api_key_header(self):
+        requester = litellmchat.LiteLLMRequester(
+            ap=self._mock_app(),
+            config={
+                'custom_llm_provider': 'ollama_chat',
+                'provider_name': 'lightrag',
+                'requester_name': 'ollama-chat',
+            },
+        )
+        model = MockRuntimeModel('qwen2.5', 'secret-key')
+
+        import langbot_plugin.api.entities.builtin.provider.message as provider_message
+
+        args = await requester._build_completion_args(
+            model=model,
+            messages=[provider_message.Message(role='user', content='Hello')],
+        )
+
+        assert 'api_key' not in args
+        assert args['extra_headers']['X-API-Key'] == 'secret-key'
+        assert 'Authorization' not in args['extra_headers']
+
+    @pytest.mark.asyncio
+    async def test_lightrag_ollama_completion_removes_explicit_authorization_header(self):
+        requester = litellmchat.LiteLLMRequester(
+            ap=self._mock_app(),
+            config={
+                'custom_llm_provider': 'ollama_chat',
+                'provider_name': 'lightrag',
+                'requester_name': 'ollama-chat',
+            },
+        )
+        model = MockRuntimeModel('qwen2.5', 'secret-key')
+        model.model_entity.extra_args = {
+            'headers': {'Authorization': 'Bearer old', 'X-Trace-Id': 'trace-1'},
+            'extra_headers': {'Authorization': 'Bearer old-extra', 'X-Existing': 'kept'},
+        }
+
+        import langbot_plugin.api.entities.builtin.provider.message as provider_message
+
+        args = await requester._build_completion_args(
+            model=model,
+            messages=[provider_message.Message(role='user', content='Hello')],
+        )
+
+        assert 'api_key' not in args
+        assert args['headers'] == {'X-Trace-Id': 'trace-1'}
+        assert args['extra_headers'] == {'X-Existing': 'kept', 'X-API-Key': 'secret-key'}
+
+    @pytest.mark.asyncio
+    async def test_non_lightrag_ollama_completion_keeps_bearer_api_key_path(self):
+        requester = litellmchat.LiteLLMRequester(
+            ap=self._mock_app(),
+            config={
+                'custom_llm_provider': 'ollama_chat',
+                'provider_name': 'local-ollama',
+                'requester_name': 'ollama-chat',
+            },
+        )
+        model = MockRuntimeModel('qwen2.5', 'secret-key')
+
+        import langbot_plugin.api.entities.builtin.provider.message as provider_message
+
+        args = await requester._build_completion_args(
+            model=model,
+            messages=[provider_message.Message(role='user', content='Hello')],
+        )
+
+        assert args['api_key'] == 'secret-key'
+        assert 'extra_headers' not in args
+
+    @pytest.mark.asyncio
+    async def test_lightrag_ollama_scan_models_uses_x_api_key_header(self):
+        requester = litellmchat.LiteLLMRequester(
+            ap=Mock(),
+            config={
+                'base_url': 'https://lightrag.example',
+                'custom_llm_provider': 'ollama_chat',
+                'provider_name': 'lightrag',
+                'requester_name': 'ollama-chat',
+            },
+        )
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json = Mock(return_value={'data': [{'id': 'qwen2.5'}]})
+        mock_response.raise_for_status = Mock()
+
+        with patch('httpx.AsyncClient') as mock_client:
+            http_client = Mock()
+            http_client.get = AsyncMock(return_value=mock_response)
+            mock_client.return_value.__aenter__ = AsyncMock(return_value=http_client)
+
+            await requester.scan_models(api_key='secret-key')
+
+        headers = http_client.get.await_args.kwargs['headers']
+        assert headers == {'X-API-Key': 'secret-key'}
+
+
 class TestInvokeEmbedding:
     """Test invoke_embedding method"""
 

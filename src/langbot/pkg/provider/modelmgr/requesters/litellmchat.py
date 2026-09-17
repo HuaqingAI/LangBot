@@ -228,6 +228,46 @@ class LiteLLMRequester(requester.ProviderAPIRequester):
     def _get_custom_llm_provider(self) -> str | None:
         return self.requester_cfg.get('custom_llm_provider') or None
 
+    def _uses_lightrag_ollama_api_key_header(self) -> bool:
+        provider_name = str(self.requester_cfg.get('provider_name') or '').strip().lower()
+        requester_name = str(self.requester_cfg.get('requester_name') or '').strip().lower()
+        return provider_name == 'lightrag' and (
+            self._get_custom_llm_provider() == 'ollama_chat' or requester_name == 'ollama-chat'
+        )
+
+    @staticmethod
+    def _drop_authorization_header(headers: dict[str, typing.Any]) -> dict[str, typing.Any]:
+        return {key: value for key, value in headers.items() if key.lower() != 'authorization'}
+
+    def _set_lightrag_ollama_api_key_header(self, args: dict[str, typing.Any], api_key: str | None) -> None:
+        if not self._uses_lightrag_ollama_api_key_header():
+            return
+
+        args.pop('api_key', None)
+        if not api_key:
+            return
+
+        headers = args.get('headers')
+        if headers is not None and not isinstance(headers, dict):
+            raise errors.RequesterError('headers must be an object')
+        extra_headers = args.get('extra_headers')
+        if extra_headers is not None and not isinstance(extra_headers, dict):
+            raise errors.RequesterError('extra_headers must be an object')
+
+        if headers is not None:
+            args['headers'] = self._drop_authorization_header(dict(headers))
+        args['extra_headers'] = {
+            **self._drop_authorization_header(dict(extra_headers or {})),
+            'X-API-Key': api_key,
+        }
+
+    def _build_api_key_headers(self, api_key: str | None) -> dict[str, str]:
+        if not api_key:
+            return {}
+        if self._uses_lightrag_ollama_api_key_header():
+            return {'X-API-Key': api_key}
+        return {'Authorization': f'Bearer {api_key}'}
+
     def _safe_litellm_bool_helper(self, helper_name: str, model_name: str) -> bool:
         """Call a LiteLLM boolean capability helper without letting metadata gaps fail requests."""
         helper = getattr(litellm, helper_name, None)
@@ -1148,6 +1188,7 @@ class LiteLLMRequester(requester.ProviderAPIRequester):
                 args['tools'] = tools
                 args.setdefault('tool_choice', 'auto')
 
+        self._set_lightrag_ollama_api_key_header(args, api_key)
         return args
 
     async def invoke_llm(
@@ -1366,6 +1407,7 @@ class LiteLLMRequester(requester.ProviderAPIRequester):
             args.update(model.model_entity.extra_args)
 
         args.update(extra_args)
+        self._set_lightrag_ollama_api_key_header(args, api_key)
 
         try:
             response = await aembedding(**args)
@@ -1535,9 +1577,7 @@ class LiteLLMRequester(requester.ProviderAPIRequester):
         if not base_url:
             raise errors.RequesterError('Base URL required for model scanning')
 
-        headers = {}
-        if api_key:
-            headers['Authorization'] = f'Bearer {api_key}'
+        headers = self._build_api_key_headers(api_key)
 
         models_url = f'{base_url}/models'
 

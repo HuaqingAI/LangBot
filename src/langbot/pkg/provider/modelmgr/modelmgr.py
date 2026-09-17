@@ -742,6 +742,7 @@ class ModelManager:
         litellm_provider = self._get_litellm_provider_from_manifest(requester_manifest)
         config = {
             'base_url': provider_entity.base_url,
+            'provider_name': provider_entity.name,
             'requester_name': provider_entity.requester,
         }
 
